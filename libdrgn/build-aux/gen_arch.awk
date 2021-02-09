@@ -1,36 +1,16 @@
 # Copyright (c) Facebook, Inc. and its affiliates.
 # SPDX-License-Identifier: GPL-3.0+
 
-# This script generates a drgn architecture support file ("arch_foo.c") from an
-# input file ("arch_foo.c.in").
+# This script generates a drgn architecture file ("arch_foo.inc") from an
+# architecture definition file ("arch_foo.defs").
 #
-# The overall format of the input file is:
-#
-# %{
-# prologue
-# %}
-# declarations
-# %%
-# registers
-# %%
-# epilogue
-#
-# (This is similar to the format used by flex, bison, and gperf.)
-#
-# The declarations section contains additional options. Currently, the only
-# option is the architecture name, which is indicated by a line not starting
-# with "%".
-#
-# The registers section contains a list of register definitions formatted as
+# The definition file contains a list of register definitions formatted as
 # "name, number", one per line. The ", number" may be omitted, in which case it
 # defaults to the previous number plus one (or zero for the first register).
-# These are saved in the "registers" array; the indices are the register names,
-# and the values are the numbers.
 #
-# Lines outside of the prologue and epilogue sections that start with "#" are
-# ignored.
+# Lines starting with "#" and lines consisting only of whitespace are ignored.
 #
-# This generates three definitions:
+# The generated file contains three definitions:
 #
 # 1. An array of register definitions:
 #    static const struct drgn_register registers[];
@@ -38,17 +18,14 @@
 # 2. A lookup function (implemented as a trie using nested switch statements):
 #    static const struct drgn_register *register_by_name(const char *name);
 #
-# 3. A macro containing initializers for the "name", "arch", "registers",
-#    "num_registers", and "register_by_name" members of "struct
-#    drgn_architecture_info":
-#    #define ARCHITECTURE_INFO
+# 3. A macro containing initializers for the "registers", "num_registers", and
+#    "register_by_name" members of "struct drgn_architecture_info":
+#    #define ARCHITECTURE_REGISTERS ...
 #
 # The prologue and epilogue are copied before and after these definitions,
 # respectively.
 
 BEGIN {
-	state = "DECLARATIONS"
-	arch_name = ""
 	split("", registers)
 	regno = 0
 
@@ -60,29 +37,20 @@ function error(msg) {
 	exit 1
 }
 
-# Comments.
-
-state != "PROLOGUE" && state != "EPILOGUE" && /^#/ {
+/^\s*#/ {
 	next
 }
 
-# State transitions.
-
-state == "DECLARATIONS" && $0 == "%{" {
-	state = "PROLOGUE"
+match($0, /^\s*([^[:space:],]+)\s*(,\s*([[:digit:]]+|0[xX][[:xdigit:]]+))?\s*$/, group) {
+	name = group[1] ""
+	if (3 in group)
+		regno = strtonum(group[3] "")
+	registers[name] = regno++
 	next
 }
 
-state == "DECLARATIONS" && $0 == "%%" {
-	if (length(arch_name) == 0)
-		error("missing architecture name")
-	state = "REGISTERS"
-	next
-}
-
-state == "PROLOGUE" && $0 == "%}" {
-	state = "DECLARATIONS"
-	next
+/\S/ {
+	error("invalid input in " state)
 }
 
 function add_to_trie(node, s, value,     char) {
@@ -116,12 +84,7 @@ function trie_to_switch(node, indent,     char) {
 	print indent "}"
 }
 
-function sanitize(s) {
-	gsub(/[^a-zA-Z0-9_]/, "_", s)
-	return s
-}
-
-state == "REGISTERS" && $0 == "%%" {
+END {
 	print "\nstatic const struct drgn_register registers[] = {"
 	i = 0
 	split("", trie)
@@ -139,45 +102,8 @@ state == "REGISTERS" && $0 == "%%" {
 	print "}"
 	print ""
 
-	print "#define ARCHITECTURE_INFO \\"
-	print "\t.name = \"" arch_name "\", \\"
-	print "\t.arch = DRGN_ARCH_" toupper(sanitize(arch_name)) ", \\"
+	print "#define ARCHITECTURE_REGISTERS \\"
 	print "\t.registers = registers, \\"
 	print "\t.num_registers = " i ", \\"
 	print "\t.register_by_name = register_by_name"
-	state = "EPILOGUE"
-	next
-}
-
-# States.
-
-state == "PROLOGUE" || state == "EPILOGUE" {
-	print
-	next
-}
-
-state == "DECLARATIONS" && !/^%/ &&
-match($0, /^\s*(\S+)\s*$/, group) {
-	if (length(arch_name) != 0)
-		error("architecture name redefined")
-	arch_name = group[1]
-	next
-}
-
-state == "REGISTERS" &&
-match($0, /^\s*([^[:space:],]+)\s*(,\s*([[:digit:]]+|0[xX][[:xdigit:]]+))?\s*$/, group) {
-	name = group[1] ""
-	if (3 in group)
-		regno = strtonum(group[3] "")
-	registers[name] = regno++
-	next
-}
-
-/\S/ {
-	error("invalid input in " state)
-}
-
-END {
-	if (state != "EPILOGUE")
-		error("file ended in " state)
 }
